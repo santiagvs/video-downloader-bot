@@ -28,10 +28,19 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 SUPPORTED_PLATFORMS = ["youtube.com", "youtu.be", "instagram.com", "tiktok.com"]
 
 
-def get_yt_dlp_opts(height=1080):
-    """Retorna opções do yt-dlp com a altura especificada."""
+def get_yt_dlp_opts(height=1080, platform="youtube"):
+    """Retorna opções do yt-dlp com a altura especificada e otimizado por plataforma."""
+    if platform == "youtube":
+        format_str = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+    elif platform == "instagram":
+        format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac][height>=720]/best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]"
+    elif platform == "tiktok":
+        format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac][height>=720]/best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]"
+    else:
+        format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]/best"
+    
     return {
-        "format": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best",
+        "format": format_str,
         "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
@@ -77,7 +86,7 @@ def convert_to_flac(video_path: Path) -> Path:
 async def download_youtube_video(url: str, height: int = 1080) -> Path | None:
     """Baixa vídeo do YouTube com a altura especificada."""
     try:
-        ydl_opts = get_yt_dlp_opts(height)
+        ydl_opts = get_yt_dlp_opts(height, platform="youtube")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
@@ -227,17 +236,8 @@ async def download_and_send_video(url: str, platform: str, update: Update, conte
     
     video_path = None
     try:
-        # Formato compatível com WhatsApp (H.264/AAC)
-        ydl_opts = {
-            "format": "best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]/best",
-            "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-            "socket_timeout": 90,
-            "retries": 3,
-            "cookiefile": str(Path.home() / ".yt-dlp-cookies.txt"),
-            "extractor_args": {"youtube": {"player_client": ["android", "tv"]}},
-        }
+        # Formato compatível com WhatsApp (H.264/AAC) preservando aspect ratio
+        ydl_opts = get_yt_dlp_opts(platform=platform)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
