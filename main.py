@@ -1,7 +1,12 @@
+from __future__ import annotations
 import os
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from pyrogram import Client as PyrogramClient
 from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -27,6 +32,85 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 SUPPORTED_PLATFORMS = ["youtube.com", "youtu.be", "instagram.com", "tiktok.com"]
 
+# Limite do Bot HTTP API. Acima disso, cai pro Pyrogram (MTProto, até 2GB).
+BOT_API_LIMIT = 50 * 1024 * 1024
+
+_pyrogram_client: PyrogramClient | None = None
+
+
+async def get_pyrogram() -> "PyrogramClient":
+    """Retorna o cliente Pyrogram, inicializando se necessário."""
+    global _pyrogram_client
+    from pyrogram import Client as PyrogramClient
+    
+    if _pyrogram_client is None or not _pyrogram_client.is_connected:
+        _pyrogram_client = PyrogramClient(
+            "bot_session",  # Cria bot_session.session no diretório atual
+            api_id=int(os.getenv("TELEGRAM_API_ID")),
+            api_hash=os.getenv("TELEGRAM_API_HASH"),
+            bot_token=os.getenv("BOT_TOKEN"),
+        )
+        await _pyrogram_client.start()
+        logger.info("Cliente Pyrogram iniciado.")
+    return _pyrogram_client
+
+
+async def send_file(
+    chat_id: int,
+    file_path: Path,
+    format_name: str,
+    caption: str,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Envia arquivo para o chat.
+    - Arquivos até 50MB: usa Bot HTTP API (python-telegram-bot).
+    - Arquivos de 50MB a 2GB: usa MTProto via Pyrogram (sem limite de 50MB).
+    - Acima de 2GB: rejeita (limite do MTProto, improvável na prática).
+    """
+    file_size = file_path.stat().st_size
+    size_mb = file_size / (1024 * 1024)
+
+    if file_size > 2000 * 1024 * 1024:
+        raise ValueError(f"Arquivo muito grande ({size_mb:.1f} MB). Limite absoluto: 2000 MB.")
+
+    is_audio = format_name in ["MP3", "FLAC"]
+
+    if file_size <= BOT_API_LIMIT:
+        logger.info(f"Enviando via Bot API ({size_mb:.1f} MB): {file_path.name}")
+        with open(file_path, "rb") as f:
+            if is_audio:
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=InputFile(f, filename=file_path.name),
+                    caption=caption,
+                    read_timeout=300,
+                    write_timeout=300,
+                )
+            else:
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=InputFile(f, filename=file_path.name),
+                    caption=caption,
+                    read_timeout=300,
+                    write_timeout=300,
+                )
+    else:
+        logger.info(f"Arquivo grande ({size_mb:.1f} MB) — usando Pyrogram (MTProto): {file_path.name}")
+        pyro = await get_pyrogram()
+        if is_audio:
+            await pyro.send_audio(
+                chat_id=chat_id,
+                audio=str(file_path),
+                caption=caption,
+            )
+        else:
+            await pyro.send_video(
+                chat_id=chat_id,
+                video=str(file_path),
+                caption=caption,
+            )
+
 
 def get_yt_dlp_opts(height=1080, platform="youtube"):
     """Retorna opções do yt-dlp com a altura especificada e otimizado por plataforma."""
@@ -38,7 +122,7 @@ def get_yt_dlp_opts(height=1080, platform="youtube"):
         format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac][height>=720]/best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]"
     else:
         format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]/best"
-    
+
     return {
         "format": format_str,
         "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
@@ -57,7 +141,7 @@ def convert_to_mp3(video_path: Path) -> Path:
         mp3_path = video_path.with_suffix(".mp3")
         cmd = [
             "ffmpeg", "-i", str(video_path),
-            "-vn", "-c:a", "libmp3lame", "-q:a", "0",  # 320kbps VBR
+            "-vn", "-c:a", "libmp3lame", "-q:a", "0",
             str(mp3_path)
         ]
         subprocess.run(cmd, check=True, capture_output=True, timeout=300)
@@ -98,6 +182,8 @@ async def download_youtube_video(url: str, height: int = 1080) -> Path | None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler para o comando /start."""
+    user = update.message.from_user
+    logger.info(f"Usuário:@{user.username} (ID:{user.id}) - Comando: /start")
     await update.message.reply_text(
         "🎬 **Bot de Download de Vídeos**\n\n"
         "Envie um link de vídeo do **YouTube, Instagram ou TikTok** que eu baixo para você!\n\n"
@@ -108,6 +194,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler para o comando /help."""
+    user = update.message.from_user
+    logger.info(f"Usuário:@{user.username} (ID:{user.id}) - Comando: /help")
     await update.message.reply_text(
         "📚 **Ajuda do Bot de Download de Vídeos**\n\n"
         "🔹 **Comandos disponíveis:**\n"
@@ -120,7 +208,7 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⚠️ **Observações:**\n"
         "- Vídeos privados ou restritos não podem ser baixados.\n"
         "- O bot armazena os arquivos temporariamente e os exclui após o envio.\n"
-        "- Telegram tem limite de **50MB** para envio de arquivos por bots."
+        "- Arquivos acima de 2GB não são suportados (raro na prática)."
     )
 
 
@@ -146,13 +234,16 @@ async def show_youtube_options(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_youtube_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler para escolhas de formato do YouTube."""
     query = update.callback_query
+    user = query.from_user
     await query.answer()
-    
+
     data = query.data
     url = data.split("_", 2)[2]
-    
+    logger.info(f"Usuário:@{user.username} (ID:{user.id}) - Callback: {data}")
+
     await query.edit_message_text("⏳ **Baixando e processando...** Aguarde um momento.")
-    
+
+    video_path = None
     if data.startswith("yt_1080p"):
         video_path = await download_youtube_video(url, height=1080)
         format_name = "MP4 1080p"
@@ -182,61 +273,56 @@ async def handle_youtube_choice(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         await query.edit_message_text("❌ **Opção inválida!**")
         return
-    
+
     if not video_path or not video_path.exists():
         await query.edit_message_text(
             f"❌ **Falha ao baixar/converter o vídeo como {format_name}!**\n"
             "Verifique se o link está correto e se o vídeo é público."
         )
         return
-    
+
+    size_mb = video_path.stat().st_size / (1024 * 1024)
+    if size_mb > BOT_API_LIMIT / (1024 * 1024):
+        await query.edit_message_text(
+            f"⏳ **Arquivo grande ({size_mb:.1f} MB) — enviando via upload direto...**\n"
+            "Isso pode levar alguns minutos."
+        )
+
     try:
-        file_size = video_path.stat().st_size
-        if file_size > 50 * 1024 * 1024:  # 50MB
-            await query.edit_message_text(
-                f"❌ **Arquivo muito grande!**\n"
-                f"Tamanho: {file_size / (1024*1024):.1f} MB\n"
-                "O Telegram tem limite de 50MB para envio de arquivos por bots.\n"
-                "Tente uma qualidade menor (720p ou áudio)."
-            )
-            video_path.unlink(missing_ok=True)
-            return
-        
-        with open(video_path, "rb") as file:
-            if format_name in ["MP3", "FLAC"]:
-                await context.bot.send_audio(
-                    chat_id=update.effective_chat.id,
-                    audio=InputFile(file, filename=video_path.name),
-                    caption=f"🎵 **Áudio baixado do YouTube ({format_name}):**\n{url}",
-                    read_timeout=300,
-                    write_timeout=300,
-                )
-            else:
-                await context.bot.send_video(
-                    chat_id=update.effective_chat.id,
-                    video=InputFile(file, filename=video_path.name),
-                    caption=f"🎥 **Vídeo baixado do YouTube ({format_name}):**\n{url}",
-                    read_timeout=300,
-                    write_timeout=300,
-                )
+        await send_file(
+            chat_id=update.effective_chat.id,
+            file_path=video_path,
+            format_name=format_name,
+            caption=f"{'🎵' if format_name in ['MP3', 'FLAC'] else '🎥'} **{'Áudio' if format_name in ['MP3', 'FLAC'] else 'Vídeo'} baixado do YouTube ({format_name}):**\n{url}",
+            context=context,
+        )
         video_path.unlink(missing_ok=True)
         await query.edit_message_text(f"✅ **Arquivo enviado com sucesso!** ({format_name})")
+    except ValueError as e:
+        # Acima de 2GB
+        logger.error(f"Arquivo excede limite absoluto: {e}")
+        await query.edit_message_text(
+            f"❌ **Arquivo muito grande ({size_mb:.1f} MB)!**\n"
+            "Limite máximo: 2000 MB. Tente uma qualidade menor."
+        )
+        video_path.unlink(missing_ok=True)
     except Exception as e:
         logger.error(f"Erro ao enviar arquivo: {e}")
         await query.edit_message_text(
             "❌ **Falha ao enviar o arquivo!** Tente novamente mais tarde."
         )
-        if video_path.exists():
+        if video_path and video_path.exists():
             video_path.unlink()
 
 
 async def download_and_send_video(url: str, platform: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Baixa e envia vídeo para plataformas não-YouTube."""
+    user = update.message.from_user
+    logger.info(f"Usuário:@{user.username} (ID:{user.id}) - Download {platform}: {url}")
     await update.message.reply_text("⏳ **Baixando vídeo...** Aguarde um momento.")
-    
+
     video_path = None
     try:
-        # Formato compatível com WhatsApp (H.264/AAC) preservando aspect ratio
         ydl_opts = get_yt_dlp_opts(platform=platform)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -249,46 +335,50 @@ async def download_and_send_video(url: str, platform: str, update: Update, conte
             "Verifique se o link está correto e se o vídeo é público."
         )
         return
-    
+
     if not video_path or not video_path.exists():
-        await update.message.reply_text(
-            f"❌ **Falha ao baixar o vídeo do {platform}!**"
-        )
+        await update.message.reply_text(f"❌ **Falha ao baixar o vídeo do {platform}!**")
         return
-    
+
+    size_mb = video_path.stat().st_size / (1024 * 1024)
+    if size_mb > BOT_API_LIMIT / (1024 * 1024):
+        await update.message.reply_text(
+            f"⏳ **Arquivo grande ({size_mb:.1f} MB) — enviando via upload direto...**\n"
+            "Isso pode levar alguns minutos."
+        )
+
     try:
-        file_size = video_path.stat().st_size
-        if file_size > 50 * 1024 * 1024:
-            await update.message.reply_text(
-                f"❌ **Vídeo muito grande!**\n"
-                f"Tamanho: {file_size / (1024*1024):.1f} MB\n"
-                "O Telegram tem limite de 50MB para envio de vídeos por bots."
-            )
-            video_path.unlink(missing_ok=True)
-            return
-        
-        with open(video_path, "rb") as video_file:
-            await update.message.reply_video(
-                video=InputFile(video_file, filename=video_path.name),
-                caption=f"🎥 **Vídeo baixado do {platform}:**\n{url}",
-                read_timeout=300,
-                write_timeout=300,
-            )
+        await send_file(
+            chat_id=update.effective_chat.id,
+            file_path=video_path,
+            format_name="MP4",
+            caption=f"🎥 **Vídeo baixado do {platform}:**\n{url}",
+            context=context,
+        )
+        video_path.unlink(missing_ok=True)
+    except ValueError as e:
+        logger.error(f"Arquivo excede limite absoluto: {e}")
+        await update.message.reply_text(
+            f"❌ **Vídeo muito grande ({size_mb:.1f} MB)!** Limite máximo: 2000 MB."
+        )
         video_path.unlink(missing_ok=True)
     except Exception as e:
         logger.error(f"Erro ao enviar vídeo: {e}")
         await update.message.reply_text(
             "❌ **Falha ao enviar o vídeo!** Tente novamente mais tarde."
         )
-        if video_path.exists():
+        if video_path and video_path.exists():
             video_path.unlink()
 
 
 async def process_video_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Processa links de vídeos enviados pelo usuário."""
+    user = update.message.from_user
     url = update.message.text.strip()
+    logger.info(f"Usuário:@{user.username} (ID:{user.id}) - URL: {url}")
 
     if not any(platform in url for platform in SUPPORTED_PLATFORMS):
+        logger.info(f"Usuário:@{user.username} (ID:{user.id}) - URL inválida: {url}")
         await update.message.reply_text(
             "❌ **URL inválida!**\n"
             "Envie um link válido do **YouTube, Instagram ou TikTok**."
@@ -300,7 +390,7 @@ async def process_video_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Instagram" if "instagram.com" in url else
         "TikTok"
     )
-    
+
     if platform == "YouTube":
         await show_youtube_options(update, context, url)
     else:
@@ -315,11 +405,18 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "⚠️ **Ocorreu um erro inesperado!** Tente novamente mais tarde."
         )
 
+
 def main() -> None:
     """Função principal para iniciar o bot."""
     token = os.getenv("BOT_TOKEN")
     if not token:
         logger.error("Token do bot não encontrado no .env!")
+        return
+
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+    if not api_id or not api_hash:
+        logger.error("TELEGRAM_API_ID ou TELEGRAM_API_HASH não encontrados no .env!")
         return
 
     from telegram.request import HTTPXRequest
@@ -339,6 +436,7 @@ def main() -> None:
 
     logger.info("Bot iniciado com sucesso!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()

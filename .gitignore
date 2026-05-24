@@ -4,3 +4,5 @@ downloads/
 __pycache__/
 *.pyc
 *.log
+.vibe/
+*.session*
