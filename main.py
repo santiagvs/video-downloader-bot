@@ -14,21 +14,17 @@ from telegram.ext import (
 import yt_dlp
 import subprocess
 
-# Carrega variáveis de ambiente
 load_dotenv()
 
-# Configuração de logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# Caminho para a pasta de downloads
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Plataformas suportadas
 SUPPORTED_PLATFORMS = ["youtube.com", "youtu.be", "instagram.com", "tiktok.com"]
 
 
@@ -144,9 +140,8 @@ async def handle_youtube_choice(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     data = query.data
-    url = data.split("_", 2)[2]  # Extrai URL do callback_data
+    url = data.split("_", 2)[2]
     
-    # Mostra mensagem de espera
     await query.edit_message_text("⏳ **Baixando e processando...** Aguarde um momento.")
     
     if data.startswith("yt_1080p"):
@@ -187,7 +182,6 @@ async def handle_youtube_choice(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     try:
-        # Verifica tamanho do arquivo (Telegram tem limite de 50MB para bots)
         file_size = video_path.stat().st_size
         if file_size > 50 * 1024 * 1024:  # 50MB
             await query.edit_message_text(
@@ -233,8 +227,9 @@ async def download_and_send_video(url: str, platform: str, update: Update, conte
     
     video_path = None
     try:
+        # Formato compatível com WhatsApp (H.264/AAC)
         ydl_opts = {
-            "format": "bestvideo+bestaudio/best",
+            "format": "best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]/best",
             "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
             "quiet": True,
             "no_warnings": True,
