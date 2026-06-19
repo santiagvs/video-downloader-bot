@@ -113,15 +113,23 @@ async def send_file(
 
 
 def get_yt_dlp_opts(height=1080, platform="youtube"):
-    """Retorna opções do yt-dlp com a altura especificada e otimizado por plataforma."""
     if platform == "youtube":
         format_str = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+        cookie_opts = {
+            "cookiefile": str(Path.home() / ".yt-dlp-cookies.txt"),
+            "extractor_args": {"youtube": {"player_client": ["android", "tv"]}},
+        }
     elif platform == "instagram":
         format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac][height>=720]/best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]"
+        cookie_opts = {
+            "cookiefile": str(Path.home() / ".yt-dlp-instagram-cookies.txt"),
+        }
     elif platform == "tiktok":
         format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac][height>=720]/best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]"
+        cookie_opts = {}  # TikTok geralmente não precisa
     else:
         format_str = "best[ext=mp4][vcodec^=avc1][acodec^=aac]/best[ext=mp4]/best"
+        cookie_opts = {}
 
     return {
         "format": format_str,
@@ -130,8 +138,7 @@ def get_yt_dlp_opts(height=1080, platform="youtube"):
         "no_warnings": True,
         "socket_timeout": 90,
         "retries": 3,
-        "cookiefile": str(Path.home() / ".yt-dlp-cookies.txt"),
-        "extractor_args": {"youtube": {"player_client": ["android", "tv"]}},
+        **cookie_opts,
     }
 
 
