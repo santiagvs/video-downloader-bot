@@ -330,7 +330,7 @@ async def download_and_send_video(url: str, platform: str, update: Update, conte
 
     video_path = None
     try:
-        ydl_opts = get_yt_dlp_opts(platform=platform)
+        ydl_opts = get_yt_dlp_opts(platform=platform.lower())
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
